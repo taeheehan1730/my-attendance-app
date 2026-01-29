@@ -8,21 +8,18 @@ import io
 # -------------------------------------------------------------
 st.set_page_config(page_title="문샷 출석부", page_icon="📅")
 
-# [설정] 구글 시트 링크 (수정할 필요 없음)
-# 선생님의 시트 ID와 GID를 포함한 CSV 변환 링크입니다.
+# [설정] 구글 시트 링크
 sheet_url = "https://docs.google.com/spreadsheets/d/1XqLy6uLi_S22wgBVM0lOsBGmQboQI_DA67MD7ipiUxw/export?format=csv&gid=663277277"
 
 # -------------------------------------------------------------
-# 데이터 불러오기 함수 (캐싱 적용으로 속도 향상)
+# 데이터 불러오기 함수
 # -------------------------------------------------------------
-@st.cache_data(ttl=60) # 60초마다 데이터 새로고침
+@st.cache_data(ttl=60)
 def load_data():
     try:
         response = requests.get(sheet_url)
         response.raise_for_status()
         decoded_content = response.content.decode('utf-8')
-        
-        # 데이터 읽기 (줄바꿈 기준으로 나눔)
         lines = decoded_content.splitlines()
         data = [line.split(',') for line in lines]
         return data
@@ -38,7 +35,7 @@ def main():
     raw_data = load_data()
 
     if not raw_data:
-        st.error("데이터를 불러오는 데 실패했습니다. 인터넷 연결을 확인하세요.")
+        st.error("데이터를 불러오는 데 실패했습니다.")
         return
 
     # 1. '성함'이 적힌 줄(Header) 찾기
@@ -48,76 +45,58 @@ def main():
             header_idx = i
             break
             
-    if header_idx != -1 and header_idx > 0:
-        # [중요 수정] 날짜는 '성함' 줄보다 한 줄 위에 있습니다! (header_idx - 1)
-        date_row = raw_data[header_idx - 1]
+    if header_idx != -1:
+        # 2. 날짜가 있는 줄 찾기 (자동 감지 로직)
+        # 우선 '성함'과 같은 줄(header_idx)을 확인해보고, 없으면 윗줄(header_idx-1)을 확인
         
-        # 2. 날짜 옵션 만들기 (날짜 이름과 열 번호 짝짓기)
-        date_options = {} 
-        for idx, val in enumerate(date_row):
-            # E열(인덱스 4)부터, 내용이 비어있지 않은 칸만 날짜로 인식
-            if idx >= 4 and val.strip(): 
-                date_options[val.strip()] = idx
-                
-        # 날짜가 잘 찾아졌는지 확인
-        if not date_options:
-            st.warning("날짜 형식을 찾지 못했습니다. 3행에 날짜가 있는지 확인해주세요.")
+        # [후보 1] 성함이 있는 줄 (가장 유력)
+        row_candidate_1 = raw_data[header_idx]
+        dates_1 = {}
+        for idx, val in enumerate(row_candidate_1):
+            if idx >= 4 and val.strip(): # E열(4)부터 데이터가 있는지 확인
+                dates_1[val.strip()] = idx
+
+        # [후보 2] 바로 윗줄 (혹시 날짜가 위에 병합되어 있는 경우)
+        dates_2 = {}
+        if header_idx > 0:
+            row_candidate_2 = raw_data[header_idx - 1]
+            for idx, val in enumerate(row_candidate_2):
+                if idx >= 4 and val.strip():
+                    dates_2[val.strip()] = idx
+        
+        # 최종 결정: 데이터가 더 많은 쪽을 선택
+        if len(dates_1) >= len(dates_2) and len(dates_1) > 0:
+            date_options = dates_1
+            # st.caption("DEBUG: 성함과 같은 줄에서 날짜를 찾았습니다.")
+        elif len(dates_2) > 0:
+            date_options = dates_2
+            # st.caption("DEBUG: 윗줄에서 날짜를 찾았습니다.")
+        else:
+            st.error("🚨 날짜를 찾지 못했습니다. (E열 이후가 비어있습니다)")
+            # 디버깅을 위해 현재 읽은 줄을 화면에 보여줌 (문제 해결용)
+            st.write("읽은 데이터(성함 줄):", raw_data[header_idx])
             return
 
-        # 3. 날짜 선택 박스 (Selectbox)
+        # 3. 날짜 선택 박스
         selected_date = st.selectbox("확인할 날짜를 선택하세요 👇", list(date_options.keys()))
         
-        # 구분선
         st.divider()
 
         if selected_date:
-            col_idx = date_options[selected_date] # 선택한 날짜의 열 번호
+            col_idx = date_options[selected_date]
+            attendees = []
+            absentees = []
             
-            attendees = [] # 참석자 명단
-            absentees = [] # 불참자 명단
-            
-            # 4. 명단 분류 시작 (성함 줄 바로 다음부터 끝까지)
+            # 4. 명단 분류 (성함 줄 다음부터 끝까지)
             for row in raw_data[header_idx+1:]:
-                # 줄이 비어있으면 건너뜀
                 if not row: continue
-                
-                # 이름 가져오기
                 name = row[0].strip()
                 
-                # [요청하신 기능] 이름이 없거나, '참석 인원' 통계 줄이 나오면 멈춤(break)
+                # 종료 조건: 이름이 없거나 '참석 인원' 통계 줄
                 if not name: break
                 if "참석" in name and "인원" in name: break
                 
-                # 체크박스 값 확인 (TRUE / FALSE)
+                # 체크박스 확인
                 check_val = "FALSE"
-                # 데이터 길이가 짧아도 에러 안 나게 처리
                 if len(row) > col_idx:
-                    check_val = row[col_idx].strip().upper()
-                
-                if check_val == "TRUE":
-                    attendees.append(name)
-                else:
-                    absentees.append(name)
-            
-            # 5. 결과 화면 출력 (깔끔한 디자인)
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.success(f"🔵 참석 ({len(attendees)}명)")
-                if attendees:
-                    st.write("\n".join([f"- {name}" for name in attendees]))
-                else:
-                    st.write("없음")
-            
-            with col2:
-                st.error(f"🔴 불참 ({len(absentees)}명)")
-                if absentees:
-                    st.write("\n".join([f"- {name}" for name in absentees]))
-                else:
-                    st.write("없음")
-            
-    else:
-        st.error("엑셀 파일에서 '성함' 또는 '이름' 칸을 찾을 수 없습니다.")
-
-if __name__ == "__main__":
-    main()
+                    check_val
